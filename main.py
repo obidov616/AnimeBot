@@ -366,10 +366,13 @@ def main_reply_keyboard():
 
 
 def search_menu(user_id=None):
+    # Kataloglar alohida ro'yxatlarni ochadi; kod va nom bo'yicha qidiruv alohida qoladi.
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎞 Kino", callback_data="category:movie"), InlineKeyboardButton(text="📺 Serial", callback_data="category:series")],
-        [InlineKeyboardButton(text="🍥 Anime", callback_data="category:anime"), InlineKeyboardButton(text="🎨 Multfilm", callback_data="category:cartoon")],
-        [InlineKeyboardButton(text="🔢 Kod bo'yicha qidirish", callback_data="search"), InlineKeyboardButton(text="🔠 Nom bo'yicha qidirish", callback_data="search_name")],
+        [InlineKeyboardButton(text="🎞 Kinolar ro'yxati", callback_data="category_list:movie")],
+        [InlineKeyboardButton(text="🍥 Anime ro'yxati", callback_data="category_list:anime")],
+        [InlineKeyboardButton(text="🎨 Multiklar ro'yxati", callback_data="category_list:cartoon")],
+        [InlineKeyboardButton(text="📺 Seriallar ro'yxati", callback_data="category_list:series")],
+        [InlineKeyboardButton(text="🔢 Kod bo'yicha izlash", callback_data="search"), InlineKeyboardButton(text="🔠 Nom bo'yicha izlash", callback_data="search_name")],
         [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="home")],
     ])
 
@@ -413,6 +416,7 @@ def owner_menu():
         [InlineKeyboardButton(text=("💎 VIP: O'CHIRISH" if load_data().get("settings", {}).get("vip_enabled", False) else "💎 VIP: YOQISH"), callback_data="owner_vip")],
         [InlineKeyboardButton(text="📣 Hammaga xabar yuborish", callback_data="broadcast")],
         [InlineKeyboardButton(text="⚙️ Bot sozlamalari", callback_data="owner_settings")],
+        [InlineKeyboardButton(text="👥 Obunachilarni boshqarish", callback_data="manage_users")],
         [InlineKeyboardButton(text="📊 Statistika", callback_data="stats")],
         [InlineKeyboardButton(text=("📣 Yangi kontent xabari: YOQILGAN" if load_data().get("settings", {}).get("notify_new_content", True) else "📣 Yangi kontent xabari: O‘CHIRILGAN"), callback_data="owner_notify_toggle")],
     ])
@@ -486,10 +490,10 @@ def episode_keyboard(code: str, episodes: dict, catalog_key=None, catalog_item=N
         if total_pages > 1:
             pager = []
             if page > 0:
-                pager.append(InlineKeyboardButton(text="⬅️ Orqaga", callback_data=f"season_page:{code}:{season}:{page-1}"))
+                pager.append(InlineKeyboardButton(text="⬅️", callback_data=f"season_page:{code}:{season}:{page-1}"))
             pager.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="page_info"))
             if page < total_pages - 1:
-                pager.append(InlineKeyboardButton(text="Oldinga ➡️", callback_data=f"season_page:{code}:{season}:{page+1}"))
+                pager.append(InlineKeyboardButton(text="➡️", callback_data=f"season_page:{code}:{season}:{page+1}"))
             rows.append(pager)
         if len(season_keys) > 1:
             rows.append([InlineKeyboardButton(text="⬅️ Fasllar", callback_data=f"season_show:{code}:choose")])
@@ -571,6 +575,9 @@ class Form(StatesGroup):
     edit_poster_code = State()
     edit_poster_file = State()
     admin_permissions_id = State()
+    manage_vip_days = State()
+    manage_balance_amount = State()
+    manage_mute_duration = State()
 
 
 def parse_channel_entry(entry):
@@ -629,6 +636,11 @@ async def require_subscription_message(message: Message) -> bool:
     if int(message.from_user.id) in [int(x) for x in data.get("banned_users", [])]:
         await message.answer("⛔ Siz botdan foydalanishdan chetlatilgansiz.")
         return False
+    user_record = data.get("users", {}).get(str(message.from_user.id), {})
+    mute_until = int(user_record.get("mute_until", 0) or 0)
+    if mute_until > now_ts():
+        await message.answer(f"🔇 Botdan foydalanish vaqtincha cheklangan.\nQayta foydalanish: {fmt_date(mute_until)}")
+        return False
     if await check_subscription(message.from_user.id):
         return True
     await message.answer(
@@ -649,6 +661,9 @@ async def start(message: Message, state: FSMContext):
     save_data(data)
     if int(message.from_user.id) in [int(x) for x in data.get("banned_users", [])]:
         return await message.answer("⛔ Siz botdan foydalanishdan chetlatilgansiz.")
+    _u = data.get("users", {}).get(str(message.from_user.id), {})
+    if int(_u.get("mute_until", 0) or 0) > now_ts():
+        return await message.answer(f"🔇 Botdan foydalanish vaqtincha cheklangan.\nQayta foydalanish: {fmt_date(int(_u['mute_until']))}")
     if not await check_subscription(message.from_user.id):
         return await message.answer("🔒 <b>Botdan foydalanishdan oldin majburiy kanallarga obuna bo‘ling.</b>", reply_markup=subscription_keyboard())
     await send_start(message)
@@ -945,21 +960,63 @@ async def vip_info_callback(call: CallbackQuery):
 
 @dp.callback_query(F.data == "vip_buy")
 async def vip_buy_callback(call: CallbackQuery):
-    cfg = load_data().get("settings", {})
+    data = load_data(); cfg = data.get("settings", {})
     if not cfg.get("vip_enabled", False) and not is_owner(call.from_user.id):
         return await call.answer("VIP hozircha o'chirilgan.", show_alert=True)
-    contact = str(cfg.get("admin_contact", "obidov_xz")).lstrip("@")
-    text = "💎 <b>VIP olish</b>\n\nVIP obunasini faollashtirish uchun admin bilan bog'laning."
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✉️ Admin bilan bog'lanish", url=f"https://t.me/{contact}")],
-        [InlineKeyboardButton(text="❓ VIP o'zi nima?", callback_data="vip_info")],
-        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="home")],
-    ])
-    try:
-        await call.message.edit_text(text, reply_markup=kb)
-    except Exception:
-        await call.message.answer(text, reply_markup=kb)
+    price = int(cfg.get("vip_month_price", 15000) or 15000)
+    max_months = max(1, min(24, int(cfg.get("vip_max_months", 6) or 6)))
+    rows = [[InlineKeyboardButton(text=f"{m} oy — {price*m:,} so'm".replace(',', ' '), callback_data=f"vip_plan:{m}")] for m in range(1, max_months+1)]
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="vip_info")])
+    text = f"💎 <b>VIP sotib olish</b>\n\n1 oy: {price:,} so'm\nKerakli muddatni tanlang. Xarid ikki marta tasdiqlanadi va pul balansingizdan yechiladi.".replace(',', ' ')
+    try: await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception: await call.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await call.answer()
+
+@dp.callback_query(F.data.startswith("vip_plan:"))
+async def vip_plan_callback(call: CallbackQuery):
+    data=load_data(); cfg=data.get("settings", {})
+    if not cfg.get("vip_enabled", False) and not is_owner(call.from_user.id):
+        return await call.answer("VIP hozircha o'chirilgan.", show_alert=True)
+    try: months=int(call.data.split(':',1)[1])
+    except ValueError: return await call.answer("Muddat noto'g'ri", show_alert=True)
+    max_months=max(1,min(24,int(cfg.get('vip_max_months',6) or 6)))
+    if not 1 <= months <= max_months: return await call.answer("Bu muddat mavjud emas", show_alert=True)
+    price=int(cfg.get('vip_month_price',15000) or 15000)*months
+    user=data.setdefault('users',{}).setdefault(str(call.from_user.id),{})
+    balance=float(user.get('balance',0) or 0)
+    if balance < price:
+        return await call.answer(f"Balansingiz yetarli emas. Kerak: {price:,} so'm; balans: {balance:g} so'm".replace(',', ' '), show_alert=True)
+    kb=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Ha, sotib olaman", callback_data=f"vip_confirm:{months}")],
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="vip_buy")]
+    ])
+    text=f"⚠️ <b>Xaridni tasdiqlash</b>\n\nVIP muddati: {months} oy\nNarxi: {price:,} so'm\nBalansingiz: {balance:g} so'm\nXaridni davom ettirish uchun yana bir marta tasdiqlang.".replace(',', ' ')
+    try: await call.message.edit_text(text,reply_markup=kb)
+    except Exception: await call.message.answer(text,reply_markup=kb)
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("vip_confirm:"))
+async def vip_confirm_callback(call: CallbackQuery):
+    try: months=int(call.data.split(':',1)[1])
+    except ValueError: return await call.answer("Muddat noto'g'ri",show_alert=True)
+    data=load_data(); cfg=data.get('settings',{})
+    if not cfg.get('vip_enabled',False) and not is_owner(call.from_user.id): return await call.answer("VIP hozircha o'chirilgan.",show_alert=True)
+    max_months=max(1,min(24,int(cfg.get('vip_max_months',6) or 6)))
+    if not 1 <= months <= max_months: return await call.answer("Muddat noto'g'ri",show_alert=True)
+    user=data.setdefault('users',{}).setdefault(str(call.from_user.id),{})
+    price=int(cfg.get('vip_month_price',15000) or 15000)*months
+    balance=float(user.get('balance',0) or 0)
+    if balance < price: return await call.answer("Balansingiz yetarli emas.",show_alert=True)
+    # Takroriy callbackdan ikki marta pul yechilmasligi uchun balans tekshiruvi va yozish bir amalda.
+    user['balance']=balance-price
+    base=max(now_ts(),int(user.get('vip_until',0) or 0))
+    user['vip_until']=base+months*int(cfg.get('vip_duration_days',30) or 30)*86400
+    user.pop('vip_warned_until',None)
+    save_data(data)
+    text=f"✅ <b>VIP faollashtirildi!</b>\nMuddat: {months} oy\nTo'landi: {price:,} so'm\nQolgan balans: {user['balance']:g} so'm\nTugash vaqti: {fmt_date(user['vip_until'])}".replace(',', ' ')
+    try: await call.message.edit_text(text,reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Asosiy menyu",callback_data="home")]]))
+    except Exception: await call.message.answer(text)
+    await call.answer("VIP sotib olindi")
 
 
 @dp.callback_query(F.data == "admin_home")
@@ -988,13 +1045,23 @@ async def show_user_management(message: Message, user_id: int):
     data = load_data()
     user = data.get("users", {}).get(str(user_id))
     if not user:
-        return await message.answer("❌ Bu foydalanuvchi bazada topilmadi. U botda /start bosgan bo'lishi kerak.")
+        return await message.answer("❌ Bu foydalanuvchi bazada topilmadi. U botda /start bosgan bo‘lishi kerak.")
     banned = user_id in [int(x) for x in data.get("banned_users", [])]
+    vip_until = int(user.get("vip_until", 0) or 0)
+    mute_until = int(user.get("mute_until", 0) or 0)
+    balance = float(user.get("balance", 0) or 0)
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💎 VIP berish / muddatini uzaytirish", callback_data=f"uservip:{user_id}"), InlineKeyboardButton(text="❌ VIPni olish", callback_data=f"uservipremove:{user_id}")],
+        [InlineKeyboardButton(text="💰 Balansga pul qo‘shish", callback_data=f"userbalance:{user_id}"), InlineKeyboardButton(text="💸 Balansdan ayirish", callback_data=f"userbalanceout:{user_id}")],
+        [InlineKeyboardButton(text="🔇 Mute qilish", callback_data=f"usermute:{user_id}"), InlineKeyboardButton(text="🔊 Mute bekor qilish", callback_data=f"usermuteoff:{user_id}")],
         [InlineKeyboardButton(text="🚫 Ban qilish" if not banned else "✅ Unban qilish", callback_data=f"userban:{user_id}")],
-        [InlineKeyboardButton(text="⬅️ Admin menyu", callback_data="admin_home")]
+        [InlineKeyboardButton(text="⬅️ Owner paneli", callback_data="admin_home")]
     ])
-    await message.answer(f"👤 <b>Foydalanuvchi</b>\nID: <code>{user_id}</code>\nUsername: @{user.get('username') or 'yo‘q'}\nBan: {'Ha' if banned else 'Yo‘q'}", reply_markup=kb)
+    await message.answer(
+        f"👤 <b>Foydalanuvchi</b>\nID: <code>{user_id}</code>\nUsername: @{user.get('username') or 'yo‘q'}"
+        f"\nVIP: {'Faol (' + fmt_date(vip_until) + ')' if vip_until > now_ts() else 'Faol emas'}"
+        f"\nBalans: {balance:g} so‘m\nMute: {fmt_date(mute_until) if mute_until > now_ts() else 'Yo‘q'}"
+        f"\nBan: {'Ha' if banned else 'Yo‘q'}", reply_markup=kb)
 
 
 @dp.message(Form.manage_user_id)
@@ -1037,6 +1104,66 @@ async def user_ban_callback(call: CallbackQuery):
 
 
 
+
+@dp.callback_query(F.data.startswith("uservip:"))
+async def user_vip_start(call: CallbackQuery, state: FSMContext):
+    if not is_owner(call.from_user.id): return await call.answer("Faqat owner uchun", show_alert=True)
+    uid=int(call.data.split(":",1)[1]); await state.update_data(manage_uid=uid); await state.set_state(Form.manage_vip_days)
+    await call.message.answer("VIP muddatini kunlarda yuboring (masalan, 30). 0 yuborsangiz cheksiz VIP beriladi:")
+    await call.answer()
+
+@dp.message(Form.manage_vip_days)
+async def user_vip_save(message: Message, state: FSMContext):
+    if not is_owner(message.from_user.id): return await state.clear()
+    try: days=int((message.text or "").strip()); assert days >= 0
+    except Exception: return await message.answer("0 yoki musbat kun sonini yuboring:")
+    ctx=await state.get_data(); uid=int(ctx["manage_uid"]); data=load_data(); user=data.get("users",{}).get(str(uid))
+    if not user: await state.clear(); return await message.answer("Foydalanuvchi topilmadi.")
+    user["vip_until"] = 0 if days == 0 else now_ts()+days*86400
+    save_data(data); await state.clear(); await message.answer("✅ VIP yangilandi."); await show_user_management(message,uid)
+
+@dp.callback_query(F.data.startswith("uservipremove:"))
+async def user_vip_remove(call: CallbackQuery):
+    if not is_owner(call.from_user.id): return await call.answer("Faqat owner uchun", show_alert=True)
+    uid=int(call.data.split(":",1)[1]); data=load_data(); user=data.get("users",{}).get(str(uid),{})
+    user["vip_until"]=0; save_data(data); await call.answer("VIP bekor qilindi",show_alert=True); await show_user_management(call.message,uid)
+
+@dp.callback_query(F.data.startswith(("userbalance:","userbalanceout:")))
+async def user_balance_start(call: CallbackQuery, state: FSMContext):
+    if not is_owner(call.from_user.id): return await call.answer("Faqat owner uchun", show_alert=True)
+    mode,uid=call.data.split(":",1); await state.update_data(manage_uid=int(uid), balance_mode=mode); await state.set_state(Form.manage_balance_amount)
+    await call.message.answer("Summani so‘mda yuboring (faqat musbat son):"); await call.answer()
+
+@dp.message(Form.manage_balance_amount)
+async def user_balance_save(message: Message, state: FSMContext):
+    if not is_owner(message.from_user.id): return await state.clear()
+    try: amount=float((message.text or "").strip().replace(",",".")); assert amount > 0
+    except Exception: return await message.answer("Musbat summa kiriting:")
+    ctx=await state.get_data(); uid=int(ctx["manage_uid"]); data=load_data(); user=data.get("users",{}).get(str(uid))
+    if not user: await state.clear(); return await message.answer("Foydalanuvchi topilmadi.")
+    old=float(user.get("balance",0) or 0); user["balance"] = old + amount if ctx["balance_mode"]=="userbalance" else max(0,old-amount)
+    save_data(data); await state.clear(); await message.answer("✅ Balans yangilandi."); await show_user_management(message,uid)
+
+@dp.callback_query(F.data.startswith("usermute:"))
+async def user_mute_start(call: CallbackQuery, state: FSMContext):
+    if not is_owner(call.from_user.id): return await call.answer("Faqat owner uchun", show_alert=True)
+    uid=int(call.data.split(":",1)[1]); await state.update_data(manage_uid=uid); await state.set_state(Form.manage_mute_duration)
+    await call.message.answer("Mute muddatini daqiqalarda yuboring (masalan, 60 = 1 soat, 1440 = 1 kun):"); await call.answer()
+
+@dp.message(Form.manage_mute_duration)
+async def user_mute_save(message: Message, state: FSMContext):
+    if not is_owner(message.from_user.id): return await state.clear()
+    try: minutes=int((message.text or "").strip()); assert minutes > 0
+    except Exception: return await message.answer("Musbat daqiqa sonini yuboring:")
+    ctx=await state.get_data(); uid=int(ctx["manage_uid"]); data=load_data(); user=data.get("users",{}).get(str(uid))
+    if not user: await state.clear(); return await message.answer("Foydalanuvchi topilmadi.")
+    user["mute_until"] = now_ts()+minutes*60; save_data(data); await state.clear(); await message.answer("✅ Mute muddati saqlandi."); await show_user_management(message,uid)
+
+@dp.callback_query(F.data.startswith("usermuteoff:"))
+async def user_mute_off(call: CallbackQuery):
+    if not is_owner(call.from_user.id): return await call.answer("Faqat owner uchun", show_alert=True)
+    uid=int(call.data.split(":",1)[1]); data=load_data(); data.get("users",{}).setdefault(str(uid),{})["mute_until"]=0
+    save_data(data); await call.answer("Mute bekor qilindi",show_alert=True); await show_user_management(call.message,uid)
 
 @dp.message(Command("backup"))
 async def backup_command(message: Message):
@@ -1448,16 +1575,50 @@ async def series_list(call: CallbackQuery):
     await media_category_list(call, "series", "📺 Seriallar ro‘yxati", "📭 Hozircha serial qo‘shilmagan.")
 
 
-async def media_category_list(call: CallbackQuery, media_type: str, title: str, empty_text: str):
+async def media_category_list(call: CallbackQuery, media_type: str, title: str, empty_text: str, page: int = 0):
     data = load_data()
     if not await check_subscription(call.from_user.id):
         await call.message.answer("🔒 Avval majburiy kanallarga obuna bo‘ling.", reply_markup=subscription_keyboard())
         return await call.answer()
-    items = [(code, item) for code, item in data.get("medias", {}).items() if item.get("media_type", "series") == media_type and media_available_for_user(call.from_user.id, item, data)]
-    rows = [[InlineKeyboardButton(text=f"🎬 {item['name']} · {code}", callback_data=f"show:{code}")] for code, item in items[:80]]
+    items = [(str(code), item) for code, item in data.get("medias", {}).items()
+             if item.get("media_type", "series") == media_type
+             and media_available_for_user(call.from_user.id, item, data)]
+    items.sort(key=lambda pair: pair[1].get("name", "").casefold())
+    page_size = 10
+    total_pages = max(1, (len(items) + page_size - 1) // page_size)
+    page = max(0, min(int(page), total_pages - 1))
+    visible = items[page * page_size:(page + 1) * page_size]
+    rows = [[InlineKeyboardButton(text=f"🎬 {item.get('name', 'Nomsiz')} · {code}", callback_data=f"show:{code}")]
+            for code, item in visible]
+    if total_pages > 1:
+        pager = []
+        if page > 0:
+            pager.append(InlineKeyboardButton(text="⬅️", callback_data=f"media_page:{media_type}:{page-1}"))
+        pager.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="page_info"))
+        if page < total_pages - 1:
+            pager.append(InlineKeyboardButton(text="➡️", callback_data=f"media_page:{media_type}:{page+1}"))
+        rows.append(pager)
     rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="search_menu")])
-    await call.message.answer(f"<b>{title}</b>" if items else empty_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    text = f"<b>{title}</b>\n\nJami: {len(items)} ta" if items else empty_text
+    try:
+        await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        await call.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await call.answer()
+
+
+@dp.callback_query(F.data.startswith("media_page:"))
+async def media_page_callback(call: CallbackQuery):
+    try:
+        _, media_type, page = call.data.split(":")
+    except ValueError:
+        return await call.answer()
+    labels = {"movie":("🎞 Kinolar ro'yxati", "📭 Hozircha kino qo'shilmagan."),
+              "anime":("🍥 Anime ro'yxati", "📭 Hozircha anime qo'shilmagan."),
+              "cartoon":("🎨 Multiklar ro'yxati", "📭 Hozircha multik qo'shilmagan."),
+              "series":("📺 Seriallar ro'yxati", "📭 Hozircha serial qo'shilmagan.")}
+    title, empty = labels.get(media_type, ("🎬 Kontent ro'yxati", "📭 Hozircha bo'sh."))
+    await media_category_list(call, media_type, title, empty, int(page))
 
 
 @dp.callback_query(F.data.startswith("favorite_add:"))
@@ -2616,6 +2777,33 @@ async def start_web_server():
 
 
 
+async def vip_expiry_monitor():
+    """VIP muddati tugashini avtomatik to'xtatadi va 24 soat oldin bir marta ogohlantiradi."""
+    while True:
+        try:
+            data=load_data(); users=data.setdefault("users",{}); changed=False; now=now_ts()
+            for uid, user in users.items():
+                until=int(user.get("vip_until",0) or 0)
+                if until <= 0:
+                    continue
+                if until <= now:
+                    user["vip_until"]=0
+                    user.pop("vip_warned_until",None)
+                    changed=True
+                    try: await bot.send_message(int(uid), "⏰ VIP obunangiz muddati tugadi. VIP imkoniyatlari avtomatik o'chirildi.")
+                    except Exception: pass
+                elif until-now <= 86400 and int(user.get("vip_warned_until",0) or 0) != until:
+                    try:
+                        await bot.send_message(int(uid), f"⚠️ VIP obunangiz {fmt_date(until)} da tugaydi — 1 kundan kam vaqt qoldi. Balansingizni to'ldirib, VIPni uzaytirishingiz mumkin.")
+                        user["vip_warned_until"]=until; changed=True
+                    except Exception:
+                        # Xabar yuborilmasa keyingi aylanishda qayta urinadi.
+                        pass
+            if changed: save_data(data)
+        except Exception:
+            logging.exception("VIP expiry monitor error")
+        await asyncio.sleep(60)
+
 async def main():
     if not OWNER_ID:
         raise RuntimeError(
@@ -2634,6 +2822,7 @@ async def main():
             data["admins"].append(admin_id)
     save_data(data)
     runner = await start_web_server()
+    vip_monitor_task = asyncio.create_task(vip_expiry_monitor())
     try:
         from aiogram.types import BotCommandScopeChat
         await bot.set_my_commands([BotCommand(command="start", description="Botni boshlash")])
@@ -2644,6 +2833,9 @@ async def main():
                 await bot.set_my_commands([BotCommand(command="start", description="Botni boshlash"), BotCommand(command="admin", description="Admin paneli")], scope=BotCommandScopeChat(chat_id=admin_id))
         await dp.start_polling(bot)
     finally:
+        vip_monitor_task.cancel()
+        try: await vip_monitor_task
+        except asyncio.CancelledError: pass
         await runner.cleanup()
         await bot.session.close()
 
