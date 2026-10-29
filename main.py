@@ -41,15 +41,31 @@ def InlineKeyboardButton(*, text, **kwargs):
             text = _custom_text
         _colors = _cfg.get("button_colors", {})
         _group = _button_color_group(_cb, str(text))
-        _color = _colors.get(_group) or _colors.get("all")
+        # Aniq guruh sozlamasi doim "barcha tugmalar" sozlamasidan ustun.
+        # Guruh uchun "default" tanlansa ham, umumiy rangga qaytib ketmasin.
+        if _group in _colors:
+            _color = _colors[_group]
+        else:
+            _color = _colors.get("all")
         if _color in ("primary", "success", "danger"):
-            kwargs.setdefault("style", _color)
+            kwargs["style"] = _color
+        elif _color == "default":
+            kwargs.pop("style", None)
     except Exception:
         pass
     return TelegramInlineKeyboardButton(text=small_caps(text), **kwargs)
 
 def _button_color_group(callback_data, text=""):
     cb = str(callback_data or "")
+    # Katalog sahifalash tugmalari alohida sozlanadi; episode raqamlari bundan mustasno.
+    if cb == "page_info":
+        return "page_indicator"
+    if cb.startswith(("season_page:", "media_page:")):
+        if "⬅" in str(text): return "page_left"
+        if "➡" in str(text): return "page_right"
+    # Also catch pager buttons if their callback data changes in a future menu.
+    if cb == "page_info" or re.fullmatch(r"\d+\s*/\s*\d+", str(text).strip()):
+        return "page_indicator"
     if cb in ("home", "admin_home") or "Orqaga" in text or "Asosiy menyu" in text:
         return "back"
     if cb.startswith(("episode:", "show:", "season_show:", "catalog_show:")) or cb in ("list", "movie_list", "continue_watching"):
@@ -349,14 +365,14 @@ async def send_start(message: Message, user_id=None):
 
 
 def main_menu(user_id=None):
+    # Foydalanuvchi yuborgan namunadagi joylashuv; mavjud funksiyalar olib tashlanmaydi.
     rows = [
-        [InlineKeyboardButton(text="🎬 Kino va serial izlash", callback_data="search_menu")],
-        [InlineKeyboardButton(text="📖 Qo'llanma", callback_data="guide")],
+        [InlineKeyboardButton(text="🔎 Anime va Kino izlash", callback_data="search_menu")],
+        [InlineKeyboardButton(text="👤 Hisobim", callback_data="account"), InlineKeyboardButton(text="👥 Referal", callback_data="referral")],
+        [InlineKeyboardButton(text="💰 Balans", callback_data="account"), InlineKeyboardButton(text="💎 VIP olish", callback_data="vip_buy")],
+        [InlineKeyboardButton(text="❓ VIP o‘zi nima?", callback_data="vip_info")],
+        [InlineKeyboardButton(text="📖 Qo‘llanma", callback_data="guide")],
     ]
-    if load_data().get("settings", {}).get("vip_enabled", False):
-        rows.insert(1, [InlineKeyboardButton(text="💎 VIP olish", callback_data="vip_buy")])
-        rows.insert(2, [InlineKeyboardButton(text="❓ VIP o'zi nima?", callback_data="vip_info")])
-        rows.append([InlineKeyboardButton(text="👤 Hisobim", callback_data="account")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -366,13 +382,10 @@ def main_reply_keyboard():
 
 
 def search_menu(user_id=None):
-    # Kataloglar alohida ro'yxatlarni ochadi; kod va nom bo'yicha qidiruv alohida qoladi.
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎞 Kinolar ro'yxati", callback_data="category_list:movie")],
-        [InlineKeyboardButton(text="🍥 Anime ro'yxati", callback_data="category_list:anime")],
-        [InlineKeyboardButton(text="🎨 Multiklar ro'yxati", callback_data="category_list:cartoon")],
-        [InlineKeyboardButton(text="📺 Seriallar ro'yxati", callback_data="category_list:series")],
         [InlineKeyboardButton(text="🔢 Kod bo'yicha izlash", callback_data="search"), InlineKeyboardButton(text="🔠 Nom bo'yicha izlash", callback_data="search_name")],
+        [InlineKeyboardButton(text="🎞 Kinolar ro'yxati", callback_data="category_list:movie"), InlineKeyboardButton(text="📺 Seriallar ro'yxati", callback_data="category_list:series")],
+        [InlineKeyboardButton(text="🍥 Anime ro'yxati", callback_data="category_list:anime"), InlineKeyboardButton(text="🎨 Multfilmlar ro'yxati", callback_data="category_list:cartoon")],
         [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="home")],
     ])
 
@@ -439,6 +452,12 @@ def catalog_item_for_media(data: dict, media: dict):
     return None, None
 
 
+def build_pager_row(left_button, middle_button, right_button):
+    """Standart sahifalash: ⬅️ 1/3 ➡️. Episode raqamlari bundan mustasno."""
+    buttons = [b for b in (left_button, middle_button, right_button) if b is not None]
+    return [buttons]
+
+
 def episode_keyboard(code: str, episodes: dict, catalog_key=None, catalog_item=None, user_id=None, season="1", media=None, page=0):
     """Qismlar faqat 1, 2, 3 ko‘rinishida; ko‘p faslda avval fasl tanlanadi."""
     rows, row = [], []
@@ -488,13 +507,10 @@ def episode_keyboard(code: str, episodes: dict, catalog_key=None, catalog_item=N
                 rows.append(row); row=[]
         if row: rows.append(row)
         if total_pages > 1:
-            pager = []
-            if page > 0:
-                pager.append(InlineKeyboardButton(text="⬅️", callback_data=f"season_page:{code}:{season}:{page-1}"))
-            pager.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="page_info"))
-            if page < total_pages - 1:
-                pager.append(InlineKeyboardButton(text="➡️", callback_data=f"season_page:{code}:{season}:{page+1}"))
-            rows.append(pager)
+            left_btn = InlineKeyboardButton(text="⬅️", callback_data=f"season_page:{code}:{season}:{page-1}") if page > 0 else None
+            middle_btn = InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="page_info")
+            right_btn = InlineKeyboardButton(text="➡️", callback_data=f"season_page:{code}:{season}:{page+1}") if page < total_pages - 1 else None
+            rows.extend(build_pager_row(left_btn, middle_btn, right_btn))
         if len(season_keys) > 1:
             rows.append([InlineKeyboardButton(text="⬅️ Fasllar", callback_data=f"season_show:{code}:choose")])
     rows.append([InlineKeyboardButton(text="♥️ Sevimlilarga qo‘shish", callback_data=f"favorite_add:{code}")])
@@ -1359,7 +1375,7 @@ async def catalog_send_part(call: CallbackQuery):
     user["last_watched"] = {"catalog_key": key, "code": matched_code, "number": number, "media_type": "movie", "updated_at": now_ts()}
     save_data(data)
     try:
-        await bot.copy_message(chat_id=call.from_user.id, from_chat_id=part["chat_id"], message_id=part["message_id"], protect_content=True)
+        await bot.copy_message(chat_id=call.from_user.id, from_chat_id=part["chat_id"], message_id=part["message_id"], protect_content=False)
         await call.answer(f"{number}-qism yuborildi")
     except Exception:
         logging.exception("Catalog part copy failed")
@@ -1520,7 +1536,7 @@ async def send_episode(call: CallbackQuery):
         user = current_data.setdefault("users", {}).setdefault(str(call.from_user.id), {})
         user["last_watched"] = {"code": code, "season": season_number, "number": number, "media_type": media.get("media_type", "series"), "updated_at": now_ts()}
         save_data(current_data)
-        protect = True
+        protect = False
         available_numbers = []
         for ep_no, ep_rec in season_data.get("episodes", {}).items():
             if isinstance(ep_rec, dict) and ("file_id" in ep_rec or "chat_id" in ep_rec or "regular" in ep_rec):
@@ -1538,7 +1554,20 @@ async def send_episode(call: CallbackQuery):
                 "photo": bot.send_photo,
                 "voice": bot.send_voice,
             }.get(media_type, bot.send_video)
-            await send_method(chat_id=call.from_user.id, **{media_type: file_id}, caption=caption, protect_content=protect, reply_markup=nav_markup)
+            send_kwargs = {
+                "chat_id": call.from_user.id,
+                media_type: file_id,
+                "caption": caption,
+                "protect_content": protect,
+                "reply_markup": nav_markup,
+            }
+            # Bot API 8.3+: video cover is separate from the video file_id.
+            # Old records may not contain cover_id, so keep them compatible.
+            if media_type == "video" and episode.get("cover_id"):
+                send_kwargs["cover"] = episode["cover_id"]
+            if media_type == "video" and episode.get("start_timestamp") is not None:
+                send_kwargs["start_timestamp"] = episode["start_timestamp"]
+            await send_method(**send_kwargs)
         elif "chat_id" in episode and "message_id" in episode:
             await bot.copy_message(chat_id=call.from_user.id, from_chat_id=episode["chat_id"], message_id=episode["message_id"], protect_content=protect, reply_markup=nav_markup)
         else:
@@ -1591,13 +1620,10 @@ async def media_category_list(call: CallbackQuery, media_type: str, title: str, 
     rows = [[InlineKeyboardButton(text=f"🎬 {item.get('name', 'Nomsiz')} · {code}", callback_data=f"show:{code}")]
             for code, item in visible]
     if total_pages > 1:
-        pager = []
-        if page > 0:
-            pager.append(InlineKeyboardButton(text="⬅️", callback_data=f"media_page:{media_type}:{page-1}"))
-        pager.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="page_info"))
-        if page < total_pages - 1:
-            pager.append(InlineKeyboardButton(text="➡️", callback_data=f"media_page:{media_type}:{page+1}"))
-        rows.append(pager)
+        left_btn = InlineKeyboardButton(text="⬅️", callback_data=f"media_page:{media_type}:{page-1}") if page > 0 else None
+        middle_btn = InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="page_info")
+        right_btn = InlineKeyboardButton(text="➡️", callback_data=f"media_page:{media_type}:{page+1}") if page < total_pages - 1 else None
+        rows.extend(build_pager_row(left_btn, middle_btn, right_btn))
     rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="search_menu")])
     text = f"<b>{title}</b>\n\nJami: {len(items)} ta" if items else empty_text
     try:
@@ -1696,28 +1722,7 @@ async def show_media(call: CallbackQuery):
             pass
     item = data["medias"][code]
     await send_media_card(call.from_user.id, code, item)
-    # Agar 1-faslning 1-qismi saqlangan bo'lsa, nom tanlanganda avtomatik yuboramiz.
-    seasons = item.get("seasons") or {"1": {"episodes": item.get("episodes", {})}}
-    first_season = sorted(seasons, key=lambda v: int(v) if str(v).isdigit() else 999999)[0] if seasons else "1"
-    first_eps = seasons.get(first_season, {}).get("episodes", {})
-    first_record = first_eps.get("1")
-    if isinstance(first_record, dict):
-        tier = "regular"
-        episode = first_record.get(tier) if isinstance(first_record.get(tier), dict) else first_record
-        if not episode and isinstance(first_record.get("regular"), dict): episode = first_record.get("regular")
-        if isinstance(episode, dict):
-            available = [str(n) for n, rec in first_eps.items() if isinstance(rec, dict) and ("file_id" in rec or "chat_id" in rec or tier in rec)]
-            nav = episode_navigation_keyboard(code, first_season, "1", available)
-            protect = True
-            try:
-                if episode.get("file_id"):
-                    media_type = episode.get("media_type", "video")
-                    send_method = {"video": bot.send_video, "document": bot.send_document, "audio": bot.send_audio, "animation": bot.send_animation, "photo": bot.send_photo, "voice": bot.send_voice}.get(media_type, bot.send_video)
-                    await send_method(chat_id=call.from_user.id, **{media_type: episode["file_id"]}, caption=episode.get("caption") or f"🎬 <b>{item.get('name','Kontent')}</b> — 1-qism", protect_content=protect, reply_markup=nav)
-                elif episode.get("chat_id") and episode.get("message_id"):
-                    await bot.copy_message(chat_id=call.from_user.id, from_chat_id=episode["chat_id"], message_id=episode["message_id"], protect_content=protect, reply_markup=nav)
-            except Exception as exc:
-                logging.warning("Avtomatik 1-qism yuborilmadi (%s): %s", code, exc)
+    # Faqat poster va mavjud qismlar tugmalari ko'rsatiladi; qism avtomatik yuborilmaydi.
     await call.answer()
 
 
@@ -1890,10 +1895,15 @@ async def notify_content_added(code: str, item: dict):
     data = load_data()
     is_movie = item.get("media_type") == "movie"
     label = "KINO" if is_movie else "SERIAL"
-    text = (f"🎉 <b>BAZAMIZGA YANGI {label} QO‘SHILDI!</b>\n\n"
-            f"🎬 Nomi: <b>{item.get('name', 'Nomsiz')}</b>\n"
-            f"🔢 Kodi: <code>{code}</code>\n\n"
-            "Tomosha qilish uchun quyidagi tugmani bosing!")
+    years = item.get("year", "") or item.get("years", "") or "Yili ko'rsatilmagan"
+    genre = item.get("genre", "") or item.get("genres", "") or "Janr ko'rsatilmagan"
+    seasons = item.get("seasons") or {"1": {"episodes": item.get("episodes", {})}}
+    episode_count = sum(len(v.get("episodes", {})) for v in seasons.values() if isinstance(v, dict))
+    text = (f"🔥 <b>Premyera!</b>\n\n"
+            f"🎬 {item.get('name', 'Nomsiz')}\n"
+            f"{years} · {genre}\n"
+            f"📺 {episode_count} qism\n\n"
+            f"📥 Barcha qismlar tayyor — hoziroq <code>{code}</code> kodi orqali yuklab oling!👇")
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎬 Tomosha qilish", callback_data=f"show:{code}")]])
     if not data.get("settings", {}).get("notify_new_content", True):
         return
@@ -2001,18 +2011,35 @@ async def episode_batch_message(message: Message, state: FSMContext):
         await state.clear()
         return await message.answer(f"✅ Yakunlandi. {count} ta qism saqlandi.", reply_markup=admin_menu(message.from_user.id))
     if text == "/cancel":
+        saved = await state.get_data()
+        code = str(saved.get("batch_code", "")); season_no = str(saved.get("batch_season", "1"))
+        added = saved.get("batch_added", [])
+        data = load_data(); item = data.get("medias", {}).get(code)
+        if item:
+            eps = item.get("seasons", {}).get(season_no, {}).get("episodes", {})
+            for n in added:
+                eps.pop(str(n), None)
+                if season_no == "1": item.get("episodes", {}).pop(str(n), None)
+            save_data(data)
         await state.clear()
-        return await message.answer("❎ Bekor qilindi.", reply_markup=admin_menu(message.from_user.id))
+        return await message.answer("❎ Bekor qilindi. Shu jarayonda qo'shilgan qismlar olib tashlandi; avvalgi qismlar saqlandi.", reply_markup=admin_menu(message.from_user.id))
 
     # Media istalgan manbadan qabul qilinadi: kanal, mavzu, guruh yoki shaxsiy chat.
     # Faylni serverga yuklamaymiz; Telegram file_id yoki kerak bo'lsa source message saqlanadi.
     media_type = None
     file_id = None
+    cover_id = None
+    start_timestamp = None
     for attr in ("video", "document", "audio", "animation", "photo", "voice"):
         obj = getattr(message, attr, None)
         if obj:
             media_type = attr
             file_id = (obj[-1].file_id if attr == "photo" else obj.file_id)
+            if attr == "video":
+                covers = getattr(obj, "cover", None) or []
+                if covers:
+                    cover_id = covers[-1].file_id
+                start_timestamp = getattr(obj, "start_timestamp", None)
             break
     origin = getattr(message, "forward_origin", None)
     origin_chat = getattr(origin, "chat", None) if origin else None
@@ -2032,16 +2059,26 @@ async def episode_batch_message(message: Message, state: FSMContext):
     episodes = season.setdefault("episodes", {})
     numeric = [int(n) for n in episodes if str(n).isdigit()]
     number = max(numeric, default=0) + 1
-    if file_id:
+    if origin_chat and origin_message_id:
+        # Asl postni nusxalash media xabari va mavjud coverni saqlash uchun afzal.
+        record = {"chat_id": origin_chat.id, "message_id": origin_message_id, "media_type": media_type or "video"}
+        if cover_id:
+            record["cover_id"] = cover_id
+        if start_timestamp is not None:
+            record["start_timestamp"] = start_timestamp
+    elif file_id:
         record = {"file_id": file_id, "media_type": media_type or "video", "caption": (message.caption or "")[:900]}
-    else:
-        record = {"chat_id": origin_chat.id, "message_id": origin_message_id}
+        if cover_id:
+            record["cover_id"] = cover_id
+        if start_timestamp is not None:
+            record["start_timestamp"] = start_timestamp
     episodes[str(number)] = record
     if season_no == "1":
         item.setdefault("episodes", {})[str(number)] = record
     save_data(data)
     count = int(saved.get("batch_count", 0)) + 1
-    await state.update_data(batch_count=count)
+    added = list(saved.get("batch_added", [])); added.append(str(number))
+    await state.update_data(batch_count=count, batch_added=added)
     progress_id = saved.get("progress_message_id")
     if progress_id:
         try:
@@ -2187,7 +2224,19 @@ async def delete_episode_save(message: Message, state: FSMContext):
     code = saved["delete_episode_code"]
     if code not in data["medias"] or number not in data["medias"][code]["episodes"]:
         return await message.answer("❌ Bunday qism topilmadi. Qism raqamini qayta yuboring:")
-    del data["medias"][code]["episodes"][number]
+    media = data["medias"][code]
+    removed = False
+    seasons = media.get("seasons", {})
+    for season_no, season_data in seasons.items():
+        eps = season_data.get("episodes", {})
+        if number in eps:
+            del eps[number]; removed = True
+            if str(season_no) == "1": media.get("episodes", {}).pop(number, None)
+            break
+    if not removed and number in media.get("episodes", {}):
+        del media["episodes"][number]; removed = True
+    if not removed:
+        return await message.answer("❌ Bunday qism topilmadi. Qism raqamini qayta yuboring:")
     save_data(data)
     await state.clear()
     await message.answer(f"🗑 {number}-qism o'chirildi.", reply_markup=admin_menu(message.from_user.id))
@@ -2429,6 +2478,25 @@ async def start_text_save(message: Message, state: FSMContext):
     await message.answer("✅ /start xabari o'zgartirildi.", reply_markup=admin_menu(message.from_user.id))
 
 
+@dp.callback_query(F.data == "referral")
+async def referral_callback(call: CallbackQuery):
+    try:
+        me = await call.bot.get_me()
+        link = f"https://t.me/{me.username}?start={call.from_user.id}"
+        data = load_data()
+        referrals = sum(1 for u in data.get("users", {}).values() if str(u.get("referrer", "")) == str(call.from_user.id))
+        reward = data.get("settings", {}).get("referral_reward", 5000)
+        text = (f"👥 <b>Referal</b>\n\nDo‘stlaringizga havolani yuboring:\n<code>{link}</code>\n\n"
+                f"👤 Taklif qilganlar: {referrals}\n💰 Har bir referal uchun: {reward} so‘m")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Orqaga", callback_data="home")]])
+        try:
+            await call.message.edit_text(text, reply_markup=kb)
+        except Exception:
+            await call.message.answer(text, reply_markup=kb)
+    finally:
+        await call.answer()
+
+
 @dp.callback_query(F.data == "account")
 async def account_callback(call: CallbackQuery):
     data = load_data()
@@ -2494,6 +2562,9 @@ async def appearance_menu(call: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🔎 Qidirish tugmalari: {colors.get('search', 'standart')}", callback_data="color_group:search")],
         [InlineKeyboardButton(text=f"🎬 Kontent tugmalari: {colors.get('content', 'standart')}", callback_data="color_group:content")],
+        [InlineKeyboardButton(text=f"⬅️ Katalog chap strelkasi: {colors.get('page_left', 'standart')}", callback_data="color_group:page_left")],
+        [InlineKeyboardButton(text=f"➡️ Katalog o‘ng strelkasi: {colors.get('page_right', 'standart')}", callback_data="color_group:page_right")],
+        [InlineKeyboardButton(text=f"🔢 1/3 sahifa ko‘rsatkichi: {colors.get('page_indicator', 'standart')}", callback_data="color_group:page_indicator")],
         [InlineKeyboardButton(text=f"⬅️ Orqaga tugmalari: {colors.get('back', 'standart')}", callback_data="color_group:back")],
         [InlineKeyboardButton(text=f"🧩 Boshqa tugmalar: {colors.get('other', 'standart')}", callback_data="color_group:other")],
         [InlineKeyboardButton(text="🌈 Barcha tugmalar", callback_data="color_group:all")],
@@ -2510,7 +2581,7 @@ async def color_group_select(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         return await call.answer("Faqat admin va owner uchun", show_alert=True)
     group = call.data.split(":", 1)[1]
-    if group not in {"search", "content", "back", "other", "all"}:
+    if group not in {"search", "content", "back", "other", "all", "page_left", "page_right", "page_indicator"}:
         return await call.answer("Noto‘g‘ri guruh", show_alert=True)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🟥 Qizil", callback_data=f"color_set:{group}:danger")],
@@ -2528,16 +2599,19 @@ async def color_set_save(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         return await call.answer("Faqat admin va owner uchun", show_alert=True)
     _, group, color = call.data.split(":", 2)
-    if group not in {"search", "content", "back", "other", "all"} or color not in {"danger", "success", "primary", "default"}:
+    if group not in {"search", "content", "back", "other", "all", "page_left", "page_right", "page_indicator"} or color not in {"danger", "success", "primary", "default"}:
         return await call.answer("Noto‘g‘ri rang", show_alert=True)
     data = load_data()
     colors = data.setdefault("settings", {}).setdefault("button_colors", {})
-    if color == "default": colors.pop(group, None)
-    else: colors[group] = color
+    # "default" ham alohida qiymat sifatida saqlanadi: shu orqali "all" rangi
+    # tanlangan bo‘lsa ham bitta guruhni standart rangda qoldirish mumkin.
+    colors[group] = color
     save_data(data)
     await appearance_menu(call)
     await call.answer("Rang saqlandi")
 
+
+# Sahifalash joylashuvini o‘zgartirish funksiyasi olib tashlandi; standart ⬅️ 1/3 ➡️ saqlanadi.
 
 @dp.callback_query(F.data == "color_reset")
 async def color_reset(call: CallbackQuery):
